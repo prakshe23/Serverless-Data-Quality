@@ -6,7 +6,9 @@ resource "aws_athena_workgroup" "quality" {
     enforce_workgroup_configuration    = true
     publish_cloudwatch_metrics_enabled = true
 
-    bytes_scanned_cutoff_per_query = 1073741824 # 1 GiB guard rail
+    # Athena has no free tier ($5/TB scanned); this cap bounds the worst
+    # case to about $0.0005 per query.
+    bytes_scanned_cutoff_per_query = 104857600 # 100 MiB
 
     result_configuration {
       output_location = "s3://${aws_s3_bucket.athena_results.bucket}/results/"

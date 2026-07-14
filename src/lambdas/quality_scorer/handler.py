@@ -19,6 +19,12 @@ WEIGHTS = {
 PASS_THRESHOLD = float(os.environ.get("PASS_THRESHOLD", "0.8"))
 WARN_THRESHOLD = float(os.environ.get("WARN_THRESHOLD", "0.6"))
 
+# Each metric name x dataset dimension counts against CloudWatch's 10
+# always-free custom metrics, so per-dimension scores are opt-in.
+EMIT_DIMENSION_METRICS = (
+    os.environ.get("EMIT_DIMENSION_METRICS", "false").lower() == "true"
+)
+
 
 def build_report(run_context: dict, check_results: list) -> dict:
     """Pure aggregation logic, unit-testable without AWS."""
@@ -69,8 +75,11 @@ def lambda_handler(event, _context):
 
     dataset = report["dataset"]
     emit_quality_metric("OverallScore", report["overall_score"], dataset)
-    for dimension, result in report["dimensions"].items():
-        emit_quality_metric(f"Score.{dimension}", float(result.get("score", 0.0)), dataset)
+    if EMIT_DIMENSION_METRICS:
+        for dimension, result in report["dimensions"].items():
+            emit_quality_metric(
+                f"Score.{dimension}", float(result.get("score", 0.0)), dataset
+            )
     emit_quality_metric(
         "Failed", 1.0 if report["verdict"] == "FAILED" else 0.0, dataset, unit="Count"
     )

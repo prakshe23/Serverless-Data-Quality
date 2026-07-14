@@ -252,7 +252,7 @@ resource "aws_iam_role_policy" "sfn" {
   policy = data.aws_iam_policy_document.sfn.json
 }
 
-# --- Glue crawler ---
+# --- Glue crawler (only when the optional curated crawler is enabled) ---
 
 data "aws_iam_policy_document" "glue_assume" {
   statement {
@@ -265,12 +265,14 @@ data "aws_iam_policy_document" "glue_assume" {
 }
 
 resource "aws_iam_role" "glue_crawler" {
+  count              = var.enable_curated_crawler ? 1 : 0
   name               = "${local.name_prefix}-glue-crawler"
   assume_role_policy = data.aws_iam_policy_document.glue_assume.json
 }
 
 resource "aws_iam_role_policy_attachment" "glue_service" {
-  role       = aws_iam_role.glue_crawler.name
+  count      = var.enable_curated_crawler ? 1 : 0
+  role       = aws_iam_role.glue_crawler[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
 }
 
@@ -282,7 +284,8 @@ data "aws_iam_policy_document" "glue_crawler_s3" {
 }
 
 resource "aws_iam_role_policy" "glue_crawler_s3" {
+  count  = var.enable_curated_crawler ? 1 : 0
   name   = "s3-access"
-  role   = aws_iam_role.glue_crawler.id
+  role   = aws_iam_role.glue_crawler[0].id
   policy = data.aws_iam_policy_document.glue_crawler_s3.json
 }

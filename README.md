@@ -6,6 +6,9 @@ profiled, scanned for PII with **Amazon Comprehend**, and checked for
 statistical anomalies — then routed to a curated zone or quarantined, with
 every result queryable through **Athena** and a REST API.
 
+The default configuration is tuned to run **inside the AWS Free Tier** —
+see [Running it for free](#running-it-for-free).
+
 ## Architecture
 
 ```mermaid
@@ -15,7 +18,7 @@ flowchart LR
         EB --> IT[Lambda\ningestion_trigger]
     end
 
-    IT --> SFN{{Step Functions\nExpress Workflow}}
+    IT --> SFN{{Step Functions\nWorkflow}}
 
     subgraph Checks [Parallel quality checks]
         SFN --> SV[Lambda\nschema_validator]
@@ -32,7 +35,7 @@ flowchart LR
     RM --> Q[(S3 quarantine/)]
     RM --> SNS[SNS alerts]
 
-    CUR --> GC[Glue crawlers\n+ Data Catalog]
+    CUR --> GC[Glue Data Catalog\npartition projection]
     GC --> ATH[Athena workgroup]
 
     DDB[(DynamoDB\nrun store)] <--> IT & QS & RW & RM & AD
@@ -48,11 +51,11 @@ flowchart LR
 | 1 | **S3** | Data lake zones: `raw/`, `curated/`, `quarantine/`, `metrics/`; schema contracts; Athena results |
 | 2 | **EventBridge** | Watches the raw zone and fires the pipeline on every new object |
 | 3 | **Lambda** | Nine functions: trigger, four checks, scorer, writer, remediation, API |
-| 4 | **Step Functions** | Express Workflow fanning the checks out in parallel and routing on the verdict |
-| 5 | **Comprehend** | AI-powered PII entity detection (plus language detection) on sampled cell text |
+| 4 | **Step Functions** | Workflow fanning the checks out in parallel and routing on the verdict (Standard by default for free tier; Express via `workflow_type`) |
+| 5 | **Comprehend** | AI-powered PII entity detection (plus language detection) on sampled cell text; free regex mode available |
 | 6 | **DynamoDB** | Run store: per-run reports and per-dataset history (also the anomaly baseline) |
 | 7 | **SNS** | Alerting channel for failed files, workflow crashes and CloudWatch alarms |
-| 8 | **Glue** | Data Catalog database + crawlers cataloging quality metrics and curated data |
+| 8 | **Glue** | Data Catalog database + metrics table with partition projection (no crawler runs needed); optional curated-zone crawler |
 | 9 | **Athena** | SQL over the quality metrics (workgroup, named trend queries) |
 | 10 | **CloudWatch** | Custom quality metrics, dashboard, failure alarms, all logs |
 | 11 | **API Gateway** | HTTP API exposing run reports, dataset history and ad-hoc Athena queries |
@@ -83,9 +86,10 @@ X-Ray tracing is enabled across Lambda and Step Functions as a bonus.
    appends a JSON metrics record to the Hive-partitioned `metrics/` prefix.
    **FAILED** (or a workflow error, via Catch) → `remediation` moves the
    file to `quarantine/` and publishes an SNS alert.
-6. Glue crawlers keep the Data Catalog in sync so Athena can answer
-   questions like "which dataset's quality is trending down this month?"
-   — two named queries ship with the stack.
+6. The metrics table is registered in the Glue Data Catalog with
+   **partition projection**, so new metrics files are queryable in Athena
+   immediately — no crawler runs. Two named trend queries ship with the
+   stack ("which dataset's quality is trending down this month?").
 
 ## Repository layout
 
@@ -163,9 +167,31 @@ make test        # pure-logic unit tests, no AWS needed
 make fmt         # terraform fmt
 ```
 
-## Cost notes
+## Running it for free
 
-Everything is pay-per-use: Express Workflows are billed per transition,
-DynamoDB is on-demand, Athena per TB scanned (capped per query), and
-Comprehend per 100-character unit — the PII detector bounds its sample to
-keep that predictable. An idle deployment costs approximately nothing.
+The defaults are chosen so a light workload fits the AWS Free Tier:
+
+| Service | Free tier | How this stack stays inside it |
+|---------|-----------|--------------------------------|
+| Lambda | 1M requests + 400K GB-s/month, always free | ~9 short invocations per file |
+| Step Functions | 4,000 state transitions/month (Standard), always free | Default `workflow_type = STANDARD` ≈ 350 runs/month free; Express has no free tier |
+| DynamoDB | 25 RCU/25 WCU provisioned, always free | Table provisioned at 5/5 |
+| SNS | 1M publishes/month, always free | One publish per failure |
+| EventBridge | AWS-service events free | S3 object events |
+| CloudWatch | 10 custom metrics, 10 alarms, 5 GB logs, 3 dashboards | Emits 2 metrics/dataset by default; per-dimension scores opt-in via `emit_dimension_metrics` |
+| Glue | Data Catalog: 1M objects/requests free | Metrics table uses partition projection — zero crawler runs; curated crawler off by default |
+| S3 | 5 GB for 12 months | SSE-S3 encryption (no KMS charges) |
+| API Gateway | 1M HTTP API calls for 12 months | — |
+| Comprehend | 50K units/month for 12 months | Bounded sampling; or set `pii_detection_mode = "regex"` for the built-in Luhn-validated pattern matcher (free forever) |
+| Athena | **No free tier** ($5/TB scanned) | Only runs when you query; 100 MiB/query cap bounds worst case to ≈ $0.0005 |
+
+An idle deployment costs approximately nothing; a few hundred small files a
+month stays free apart from fractions of a cent of Athena if you query.
+To favor scale over free tier:
+
+```bash
+terraform -chdir=infrastructure/terraform apply \
+  -var workflow_type=EXPRESS \
+  -var emit_dimension_metrics=true \
+  -var enable_curated_crawler=true
+```

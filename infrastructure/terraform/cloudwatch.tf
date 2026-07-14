@@ -34,11 +34,36 @@ resource "aws_cloudwatch_metric_alarm" "workflow_errors" {
   alarm_actions = [aws_sns_topic.quality_alerts.arn]
 }
 
+locals {
+  # Only shown when per-dimension metrics are enabled (they cost extra
+  # custom metrics; see var.emit_dimension_metrics).
+  dimension_widget = {
+    type   = "metric"
+    x      = 12
+    y      = 6
+    width  = 12
+    height = 6
+    properties = {
+      title  = "Dimension scores"
+      region = var.aws_region
+      stat   = "Average"
+      period = 3600
+      metrics = [
+        ["DataQuality/${var.environment}", "Score.schema"],
+        [".", "Score.profile"],
+        [".", "Score.pii"],
+        [".", "Score.anomaly"]
+      ]
+      yAxis = { left = { min = 0, max = 1 } }
+    }
+  }
+}
+
 resource "aws_cloudwatch_dashboard" "quality" {
   dashboard_name = "${local.name_prefix}-overview"
 
   dashboard_body = jsonencode({
-    widgets = [
+    widgets = concat([
       {
         type   = "metric"
         x      = 0
@@ -89,27 +114,7 @@ resource "aws_cloudwatch_dashboard" "quality" {
             [".", "ExecutionsFailed", ".", "."]
           ]
         }
-      },
-      {
-        type   = "metric"
-        x      = 12
-        y      = 6
-        width  = 12
-        height = 6
-        properties = {
-          title  = "Dimension scores"
-          region = var.aws_region
-          stat   = "Average"
-          period = 3600
-          metrics = [
-            ["DataQuality/${var.environment}", "Score.schema"],
-            [".", "Score.profile"],
-            [".", "Score.pii"],
-            [".", "Score.anomaly"]
-          ]
-          yAxis = { left = { min = 0, max = 1 } }
-        }
       }
-    ]
+    ], var.emit_dimension_metrics ? [local.dimension_widget] : [])
   })
 }

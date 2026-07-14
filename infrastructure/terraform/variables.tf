@@ -34,6 +34,48 @@ variable "warn_threshold" {
   default     = 0.6
 }
 
+variable "workflow_type" {
+  description = <<-EOT
+    Step Functions workflow type. STANDARD is free-tier eligible (4,000
+    state transitions/month, roughly 350 pipeline runs); EXPRESS is cheaper
+    at high volume but has no free tier.
+  EOT
+  type        = string
+  default     = "STANDARD"
+
+  validation {
+    condition     = contains(["STANDARD", "EXPRESS"], var.workflow_type)
+    error_message = "workflow_type must be STANDARD or EXPRESS."
+  }
+}
+
+variable "pii_detection_mode" {
+  description = <<-EOT
+    "comprehend" uses Amazon Comprehend (free for 12 months up to 50K units
+    per month, then paid). "regex" uses built-in pattern matching with Luhn
+    validation - less accurate, but free forever.
+  EOT
+  type        = string
+  default     = "comprehend"
+
+  validation {
+    condition     = contains(["comprehend", "regex"], var.pii_detection_mode)
+    error_message = "pii_detection_mode must be comprehend or regex."
+  }
+}
+
+variable "enable_curated_crawler" {
+  description = "Run a scheduled Glue crawler over curated/. Crawler runs are billed per DPU-hour (not free tier); the metrics table needs no crawler."
+  type        = bool
+  default     = false
+}
+
+variable "emit_dimension_metrics" {
+  description = "Also publish per-dimension CloudWatch metrics (4 extra custom metrics per dataset; the always-free tier covers 10 total)."
+  type        = bool
+  default     = false
+}
+
 variable "lambda_memory_mb" {
   description = "Memory for the check Lambdas."
   type        = number

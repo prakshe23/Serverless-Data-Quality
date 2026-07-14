@@ -6,7 +6,7 @@ resource "aws_cloudwatch_log_group" "sfn" {
 resource "aws_sfn_state_machine" "data_quality" {
   name     = "${local.name_prefix}-workflow"
   role_arn = aws_iam_role.sfn.arn
-  type     = "EXPRESS"
+  type     = var.workflow_type
 
   definition = templatefile("${path.module}/templates/data_quality_workflow.asl.json", {
     schema_validator_arn = aws_lambda_function.functions["schema_validator"].arn

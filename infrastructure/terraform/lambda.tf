@@ -25,10 +25,11 @@ locals {
       env         = {}
     }
     pii_detector = {
-      description = "Detects PII leakage with Amazon Comprehend"
+      description = "Detects PII leakage (Amazon Comprehend or regex mode)"
       timeout     = 120
       env = {
         CONFIG_BUCKET = aws_s3_bucket.config.bucket
+        PII_MODE      = var.pii_detection_mode
       }
     }
     anomaly_detector = {
@@ -40,8 +41,9 @@ locals {
       description = "Aggregates check results into a weighted quality verdict"
       timeout     = 30
       env = {
-        PASS_THRESHOLD = tostring(var.pass_threshold)
-        WARN_THRESHOLD = tostring(var.warn_threshold)
+        PASS_THRESHOLD         = tostring(var.pass_threshold)
+        WARN_THRESHOLD         = tostring(var.warn_threshold)
+        EMIT_DIMENSION_METRICS = tostring(var.emit_dimension_metrics)
       }
     }
     results_writer = {
