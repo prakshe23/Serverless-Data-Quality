@@ -1,0 +1,11 @@
+customer_id,email,signup_date,plan,monthly_spend
+1001,alice@example.com,2026-01-15,pro,49.00
+1002,bob@example.com,2026-02-02,basic,9.00
+1003,carol@example.com,2026-02-17,pro,49.00
+1004,dan@example.com,2026-03-01,enterprise,499.00
+1005,erin@example.com,2026-03-12,basic,9.00
+1006,frank@example.com,2026-04-05,pro,49.00
+1007,grace@example.com,2026-04-22,basic,9.00
+1008,heidi@example.com,2026-05-09,pro,49.00
+1009,ivan@example.com,2026-05-30,basic,9.00
+1010,judy@example.com,2026-06-14,enterprise,499.00

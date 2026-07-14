@@ -1,0 +1,159 @@
+{
+  "Comment": "AI-enhanced data quality pipeline (Express). Fans out schema, profiling, PII (Comprehend) and anomaly checks, scores the file, then routes it to the curated zone or quarantine.",
+  "StartAt": "RunQualityChecks",
+  "States": {
+    "RunQualityChecks": {
+      "Type": "Parallel",
+      "ResultPath": "$.checks",
+      "Branches": [
+        {
+          "StartAt": "ValidateSchema",
+          "States": {
+            "ValidateSchema": {
+              "Type": "Task",
+              "Resource": "${schema_validator_arn}",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "ProfileData",
+          "States": {
+            "ProfileData": {
+              "Type": "Task",
+              "Resource": "${data_profiler_arn}",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "DetectPII",
+          "States": {
+            "DetectPII": {
+              "Type": "Task",
+              "Resource": "${pii_detector_arn}",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Comprehend.ThrottlingException", "Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+                  "IntervalSeconds": 3,
+                  "MaxAttempts": 4,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "DetectAnomalies",
+          "States": {
+            "DetectAnomalies": {
+              "Type": "Task",
+              "Resource": "${anomaly_detector_arn}",
+              "Retry": [
+                {
+                  "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException", "Lambda.SdkClientException"],
+                  "IntervalSeconds": 2,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "PrepareErrorPayload"
+        }
+      ],
+      "Next": "ScoreQuality"
+    },
+    "PrepareErrorPayload": {
+      "Type": "Pass",
+      "Parameters": {
+        "run.$": "$",
+        "error.$": "$.error"
+      },
+      "Next": "Quarantine"
+    },
+    "ScoreQuality": {
+      "Type": "Task",
+      "Resource": "${quality_scorer_arn}",
+      "Parameters": {
+        "run": {
+          "run_id.$": "$.run_id",
+          "dataset.$": "$.dataset",
+          "bucket.$": "$.bucket",
+          "key.$": "$.key"
+        },
+        "checks.$": "$.checks"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "RouteOnVerdict"
+    },
+    "RouteOnVerdict": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.verdict",
+          "StringEquals": "FAILED",
+          "Next": "Quarantine"
+        }
+      ],
+      "Default": "PublishResults"
+    },
+    "PublishResults": {
+      "Type": "Task",
+      "Resource": "${results_writer_arn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    },
+    "Quarantine": {
+      "Type": "Task",
+      "Resource": "${remediation_arn}",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    }
+  }
+}

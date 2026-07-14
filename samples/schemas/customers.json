@@ -1,0 +1,11 @@
+{
+  "columns": [
+    {"name": "customer_id", "type": "integer", "required": true},
+    {"name": "email", "type": "string", "required": true},
+    {"name": "signup_date", "type": "date", "required": true},
+    {"name": "plan", "type": "string", "required": true},
+    {"name": "monthly_spend", "type": "number", "required": false}
+  ],
+  "allow_extra_columns": false,
+  "pii_allowed": ["email"]
+}
