@@ -1,15 +1,16 @@
-# Serverless Data Quality Pipeline
+# Serverless Data Quality Pipeline (AWS Project)
 
-An AI-enhanced, fully serverless data quality pipeline on AWS. Files landing
-in a data lake are automatically validated against schema contracts,
-profiled, scanned for PII with **Amazon Comprehend**, and checked for
-statistical anomalies — then routed to a curated zone or quarantined, with
-every result queryable through **Athena** and a REST API.
+This is my project where I built a serverless data quality pipeline on AWS.
+The idea is simple: whenever a CSV file is uploaded to S3, the pipeline
+automatically checks the file quality (schema, missing values, PII leaks,
+anomalies) and then either accepts the file or quarantines it and sends an
+alert. It uses **11 AWS services** and the AI part is **Amazon Comprehend**,
+which detects personal information (PII) inside the data.
 
-The default configuration is tuned to run **inside the AWS Free Tier** —
-see [Running it for free](#running-it-for-free).
+Best part: the default setup runs inside the **AWS Free Tier**, so you can
+try it without spending money.
 
-## Architecture
+## What happens when a file is uploaded
 
 ```mermaid
 flowchart LR
@@ -44,150 +45,198 @@ flowchart LR
     QS --> CW[CloudWatch\nmetrics, dashboard, alarms] --> SNS
 ```
 
-### The eleven AWS services
+In words:
 
-| # | Service | Role in the pipeline |
-|---|---------|----------------------|
-| 1 | **S3** | Data lake zones: `raw/`, `curated/`, `quarantine/`, `metrics/`; schema contracts; Athena results |
-| 2 | **EventBridge** | Watches the raw zone and fires the pipeline on every new object |
-| 3 | **Lambda** | Nine functions: trigger, four checks, scorer, writer, remediation, API |
-| 4 | **Step Functions** | Workflow fanning the checks out in parallel and routing on the verdict (Standard by default for free tier; Express via `workflow_type`) |
-| 5 | **Comprehend** | AI-powered PII entity detection (plus language detection) on sampled cell text; free regex mode available |
-| 6 | **DynamoDB** | Run store: per-run reports and per-dataset history (also the anomaly baseline) |
-| 7 | **SNS** | Alerting channel for failed files, workflow crashes and CloudWatch alarms |
-| 8 | **Glue** | Data Catalog database + metrics table with partition projection (no crawler runs needed); optional curated-zone crawler |
-| 9 | **Athena** | SQL over the quality metrics (workgroup, named trend queries) |
-| 10 | **CloudWatch** | Custom quality metrics, dashboard, failure alarms, all logs |
-| 11 | **API Gateway** | HTTP API exposing run reports, dataset history and ad-hoc Athena queries |
+1. You upload a CSV to `raw/<dataset>/` in the S3 bucket.
+2. EventBridge notices the new file and calls a Lambda, which starts a
+   Step Functions workflow.
+3. Four checks run at the same time: schema validation, data profiling,
+   PII detection (Comprehend), and anomaly detection.
+4. A scorer Lambda combines the results into one score and a verdict:
+   `PASSED`, `WARNED`, or `FAILED`.
+5. Good files are copied to `curated/` and a metrics record is saved for
+   Athena. Bad files are moved to `quarantine/` and SNS emails you.
+6. You can see everything on a CloudWatch dashboard, query trends with
+   Athena, or call the REST API.
 
-X-Ray tracing is enabled across Lambda and Step Functions as a bonus.
+## The 11 AWS services used
 
-## How a file flows through
+| # | Service | What I used it for |
+|---|---------|--------------------|
+| 1 | S3 | Data lake (raw/curated/quarantine/metrics zones) + schema contracts |
+| 2 | EventBridge | Detects new files and triggers the pipeline |
+| 3 | Lambda | 9 functions that do all the actual work |
+| 4 | Step Functions | Runs the checks in parallel and routes on the verdict |
+| 5 | Comprehend | The AI part — finds PII like emails, SSNs, card numbers |
+| 6 | DynamoDB | Stores every run and the history per dataset |
+| 7 | SNS | Sends alert emails when a file fails |
+| 8 | Glue | Data Catalog so Athena knows the metrics table schema |
+| 9 | Athena | SQL queries over the quality metrics |
+| 10 | CloudWatch | Custom metrics, dashboard, and alarms |
+| 11 | API Gateway | REST API to fetch reports and run queries |
 
-1. A producer drops `raw/<dataset>/<file>.csv` into the lake bucket.
-2. EventBridge matches the `Object Created` event and invokes
-   `ingestion_trigger`, which registers a run in DynamoDB and starts the
-   Express workflow.
-3. Four checks run **in parallel**, each on a bounded sample of the file:
-   - `schema_validator` — columns, types and required fields against the
-     contract at `schemas/<dataset>.json` in the config bucket.
-   - `data_profiler` — completeness, uniqueness, per-column statistics.
-   - `pii_detector` — packs cell text into Comprehend
-     `DetectPiiEntities` calls; unexpected PII columns are penalized and
-     high-risk types (SSN, credit card, …) fail the file outright unless the
-     contract's `pii_allowed` list expects them.
-   - `anomaly_detector` — z-score outliers within the file plus volume
-     drift against the dataset's own run history in DynamoDB.
-4. `quality_scorer` combines the dimensions with weights
-   (schema 0.35, PII 0.25, profile 0.20, anomaly 0.20) into an overall score
-   and a verdict: `PASSED` / `WARNED` / `FAILED`, with hard-fail overrides
-   for leaked high-risk PII and missing columns.
-5. **PASSED/WARNED** → `results_writer` copies the file to `curated/` and
-   appends a JSON metrics record to the Hive-partitioned `metrics/` prefix.
-   **FAILED** (or a workflow error, via Catch) → `remediation` moves the
-   file to `quarantine/` and publishes an SNS alert.
-6. The metrics table is registered in the Glue Data Catalog with
-   **partition projection**, so new metrics files are queryable in Athena
-   immediately — no crawler runs. Two named trend queries ship with the
-   stack ("which dataset's quality is trending down this month?").
-
-## Repository layout
+## Folder structure
 
 ```
-infrastructure/terraform/   All eleven services as Terraform (one file per service)
-  templates/                Step Functions ASL definition (templated ARNs)
-src/lambdas/<name>/         One directory per Lambda function
-src/layers/common/          Shared Lambda layer (S3/DynamoDB/CloudWatch helpers)
-tests/                      Unit tests for the pure check/scoring logic
-samples/                    Example dataset + schema contract
+infrastructure/terraform/   All the AWS resources (one file per service)
+  templates/                The Step Functions workflow definition
+src/lambdas/<name>/         One folder per Lambda function
+src/layers/common/          Shared helper code (Lambda layer)
+tests/                      Unit tests (run without AWS)
+samples/                    Example CSV + schema contract to try it out
 ```
 
-## Deploy
+## How to run this project
 
-Prerequisites: Terraform >= 1.5, AWS credentials, a region where Comprehend
-is available (default `us-east-1`).
+### What you need first
+
+- An AWS account (free tier is fine)
+- [Terraform](https://developer.hashicorp.com/terraform/install) 1.5 or newer
+- [AWS CLI](https://aws.amazon.com/cli/) configured with your credentials
+  (`aws configure`)
+- Python 3.12 (only needed for running the tests locally)
+
+### Step 1 — Clone the repository
 
 ```bash
-make apply                     # terraform init + apply
-make seed                      # upload sample contract + trigger a sample run
+git clone https://github.com/prakshe23/Serverless-Data-Quality.git
+cd Serverless-Data-Quality
 ```
 
-Optionally subscribe to alerts:
+### Step 2 — Run the unit tests (optional but nice)
+
+This checks the validation/scoring logic works. No AWS needed.
+
+```bash
+pip install -r requirements-dev.txt
+make test
+```
+
+You should see `28 passed`.
+
+### Step 3 — Deploy everything to AWS
+
+```bash
+make apply
+```
+
+Terraform will show you a plan — type `yes` to confirm. It creates all 11
+services in `us-east-1` (Comprehend must be available in the region, so
+keep the default unless you know your region has it).
+
+If you want failure alert emails, deploy with your email:
 
 ```bash
 terraform -chdir=infrastructure/terraform apply -var alert_email=you@example.com
 ```
 
-## Use the API
+AWS will send you a confirmation email — click the link in it, otherwise
+SNS will not deliver alerts.
+
+### Step 4 — Upload the sample schema contract and test file
+
+```bash
+make seed
+```
+
+This does two things:
+1. Uploads `samples/schemas/customers.json` to the config bucket. This is
+   the "contract" that says what columns the `customers` dataset must have.
+2. Uploads `samples/customers.csv` to `raw/customers/` in the lake bucket —
+   which immediately triggers the pipeline!
+
+### Step 5 — Watch the pipeline run
+
+Go to the AWS console → **Step Functions** → the `data-quality-dev-workflow`
+state machine. You should see an execution that ran the four checks in
+parallel. Or open the CloudWatch dashboard (Terraform prints the URL):
+
+```bash
+terraform -chdir=infrastructure/terraform output dashboard_url
+```
+
+### Step 6 — Check the result in S3 and DynamoDB
+
+The sample file is clean, so it should be `PASSED`:
+
+- In the lake bucket you'll now see `curated/customers/customers.csv`
+  (the promoted file) and a JSON record under `metrics/year=.../`
+- The DynamoDB table `data-quality-dev-runs` has the full run report
+
+### Step 7 — Try the REST API
 
 ```bash
 API=$(terraform -chdir=infrastructure/terraform output -raw api_endpoint)
 
-# Recent runs for a dataset
+# Recent runs for the customers dataset
 curl "$API/datasets/customers/runs"
 
-# Full report for one run
+# Full report for one run (copy a run_id from the previous response)
 curl "$API/runs/<run_id>"
 
-# Ad-hoc trend query through Athena
+# Ask Athena a question over all metrics
 curl -X POST "$API/query" -H 'content-type: application/json' -d '{
   "sql": "SELECT dataset, avg(overall_score) FROM metrics GROUP BY 1"
 }'
 ```
 
-> The `/query` route only accepts read queries and runs inside a workgroup
-> with a 1 GiB scan cutoff. For production, put an authorizer on the API.
+### Step 8 — Make a file fail (the fun part)
 
-## Schema contracts
-
-Quality expectations per dataset live at `schemas/<dataset>.json` in the
-config bucket:
-
-```json
-{
-  "columns": [
-    {"name": "customer_id", "type": "integer", "required": true},
-    {"name": "email",       "type": "string",  "required": true},
-    {"name": "signup_date", "type": "date",    "required": true}
-  ],
-  "allow_extra_columns": false,
-  "pii_allowed": ["email"]
-}
-```
-
-Supported types: `string`, `integer`, `number`, `date`, `timestamp`,
-`boolean`. Datasets without a contract pass the schema dimension with an
-advisory `no_contract` flag, so onboarding a new feed never blocks it.
-
-## Develop
+Create a bad CSV — wrong column name and a missing required value:
 
 ```bash
-pip install -r requirements-dev.txt
-make test        # pure-logic unit tests, no AWS needed
-make fmt         # terraform fmt
+cat > bad.csv <<'EOF'
+customer_id,email_address,signup_date,plan,monthly_spend
+1,alice@example.com,2026-01-15,pro,49.00
+2,,2026-02-02,basic,9.00
+EOF
+
+aws s3 cp bad.csv \
+  s3://$(terraform -chdir=infrastructure/terraform output -raw lake_bucket)/raw/customers/bad.csv
 ```
 
-## Running it for free
+The schema validator sees `email` is missing (it's called `email_address`
+here), which is a hard fail. The file goes to `quarantine/customers/` and
+you get an SNS email with the reason. Check the DynamoDB record — the
+verdict will be `FAILED`.
 
-The defaults are chosen so a light workload fits the AWS Free Tier:
+### Step 9 — Add your own dataset
 
-| Service | Free tier | How this stack stays inside it |
-|---------|-----------|--------------------------------|
-| Lambda | 1M requests + 400K GB-s/month, always free | ~9 short invocations per file |
-| Step Functions | 4,000 state transitions/month (Standard), always free | Default `workflow_type = STANDARD` ≈ 350 runs/month free; Express has no free tier |
-| DynamoDB | 25 RCU/25 WCU provisioned, always free | Table provisioned at 5/5 |
+1. Write a contract for it (copy `samples/schemas/customers.json` and edit
+   the columns). Supported types: `string`, `integer`, `number`, `date`,
+   `timestamp`, `boolean`. If a column is *supposed* to contain PII (like
+   an email column), list it in `pii_allowed` so it doesn't get flagged.
+2. Upload the contract to the config bucket as `schemas/<dataset>.json`.
+3. Upload files to `raw/<dataset>/` — done.
+
+(If you skip the contract, the file still runs through the pipeline; the
+schema check just passes with a `no_contract` note.)
+
+### Step 10 — Clean up when you're done
+
+```bash
+make destroy
+```
+
+This deletes all the AWS resources so nothing keeps running in your account.
+
+## How it stays inside the Free Tier
+
+| Service | Free tier | What I did to stay inside it |
+|---------|-----------|------------------------------|
+| Lambda | 1M requests/month, always free | ~9 short invocations per file |
+| Step Functions | 4,000 transitions/month (Standard), always free | Default is Standard ≈ 350 runs/month free; Express has no free tier |
+| DynamoDB | 25 RCU/25 WCU provisioned, always free | Table is provisioned at 5/5 |
 | SNS | 1M publishes/month, always free | One publish per failure |
-| EventBridge | AWS-service events free | S3 object events |
-| CloudWatch | 10 custom metrics, 10 alarms, 5 GB logs, 3 dashboards | Emits 2 metrics/dataset by default; per-dimension scores opt-in via `emit_dimension_metrics` |
-| Glue | Data Catalog: 1M objects/requests free | Metrics table uses partition projection — zero crawler runs; curated crawler off by default |
-| S3 | 5 GB for 12 months | SSE-S3 encryption (no KMS charges) |
-| API Gateway | 1M HTTP API calls for 12 months | — |
-| Comprehend | 50K units/month for 12 months | Bounded sampling; or set `pii_detection_mode = "regex"` for the built-in Luhn-validated pattern matcher (free forever) |
-| Athena | **No free tier** ($5/TB scanned) | Only runs when you query; 100 MiB/query cap bounds worst case to ≈ $0.0005 |
+| EventBridge | AWS-service events are free | S3 object events |
+| CloudWatch | 10 custom metrics, 10 alarms, 3 dashboards | Only 2 metrics per dataset by default |
+| Glue | Data Catalog is free | Partition projection instead of crawlers (crawler runs cost money) |
+| S3 | 5 GB for 12 months | SSE-S3 encryption, no KMS charges |
+| API Gateway | 1M calls for 12 months | — |
+| Comprehend | 50K units/month for 12 months | Small bounded samples; or set `pii_detection_mode = "regex"` for a free-forever pattern matcher |
+| Athena | No free tier ($5/TB scanned) | Only bills when you query; capped at 100 MiB/query ≈ $0.0005 worst case |
 
-An idle deployment costs approximately nothing; a few hundred small files a
-month stays free apart from fractions of a cent of Athena if you query.
-To favor scale over free tier:
+If you outgrow the free tier and want more scale:
 
 ```bash
 terraform -chdir=infrastructure/terraform apply \
@@ -195,3 +244,20 @@ terraform -chdir=infrastructure/terraform apply \
   -var emit_dimension_metrics=true \
   -var enable_curated_crawler=true
 ```
+
+## Things I learned / design decisions
+
+- **Why Step Functions parallel state:** the four checks don't depend on
+  each other, so running them in parallel makes the pipeline as slow as the
+  slowest check instead of the sum of all four.
+- **Why sampling:** Lambdas read at most ~16 MB / 5,000 rows of a file.
+  Full-file scanning belongs in a heavier tool; for quality *signals*,
+  a sample is enough and keeps everything fast and cheap.
+- **Hard-fail gates:** a good weighted score shouldn't save a file that
+  leaks SSNs or is missing a required column, so those override the score.
+- **Partition projection over crawlers:** since I control the metrics
+  folder layout (`year=/month=/day=`), Athena can compute the partitions
+  itself — no crawler needed, which is both faster and free.
+- **Anomaly baseline from DynamoDB:** each dataset's own history is the
+  baseline, so a feed that suddenly sends 10x fewer rows gets flagged even
+  if every row is individually valid.
